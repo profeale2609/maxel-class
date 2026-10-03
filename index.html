@@ -91,6 +91,9 @@ input{width:100%;padding:12px 14px;border-radius:12px;border:1.5px solid var(--l
 .ok-flash{animation:flash .5s}
 @keyframes flash{0%{transform:scale(.96)}50%{transform:scale(1.03)}100%{transform:scale(1)}}
 @media (prefers-reduced-motion:reduce){.ok-flash{animation:none}}
+.aviso{border-radius:14px;padding:14px 16px;font-weight:600;margin-bottom:12px;font-size:1.05rem}
+.aviso.ok{background:var(--lime);color:var(--brand)}
+.aviso.warn{background:#FBEBCF;color:#6B4000}
 .center{text-align:center;color:var(--muted);padding:40px 0}
 </style>
 </head>
@@ -305,10 +308,38 @@ function abrirHoja(contenido) {
   document.body.append(bg);
 }
 function cerrarHoja() { document.querySelector(".sheet-bg")?.remove(); }
-const cabecera = (t) => h("div", { class: "sheet-head" }, h("h2", {}, t), h("button", { class: "x", "aria-label": "Cerrar", onclick: () => { detalleId = null; cerrarHoja(); } }, "×"));
+const cabecera = (t) => h("div", { class: "sheet-head" }, h("h2", {}, t), h("button", { class: "x", "aria-label": "Cerrar", onclick: () => { detalleId = null; detalleAviso = null; cerrarHoja(); } }, "×"));
 
+let detalleAviso = null;
 function mostrarDetalle(id, escaneado = false) {
   detalleId = id; detalleEscaneado = escaneado;
+  if (!escaneado) detalleAviso = null;
+  renderDetalle();
+}
+
+// Al escanear: registra la clase automáticamente (con protecciones)
+async function registrarEscaneo(id) {
+  const c = clientes.get(id);
+  if (!c) return;
+  const e = estado(c);
+  if (e.k !== "activo") {
+    detalleAviso = { tipo: "warn", txt: `${e.txt}. No se descontó ninguna clase.` };
+    return renderDetalle();
+  }
+  const a = c.asistencias || [];
+  const ultima = a.length ? new Date(a[a.length - 1]).getTime() : 0;
+  const min = (Date.now() - ultima) / 60000;
+  if (ultima && min < 5) {
+    detalleAviso = { tipo: "warn", txt: `Ya se registró una clase hace ${Math.max(1, Math.round(min))} min. No se descontó otra.` };
+    return renderDetalle();
+  }
+  try {
+    await updateDoc(doc(db, "clientes", id), { clasesUsadas: increment(1), asistencias: arrayUnion(new Date().toISOString()) });
+    detalleAviso = { tipo: "ok", txt: `✓ Clase registrada. Quedan ${restantes(c) - 1}` };
+    if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
+  } catch {
+    detalleAviso = { tipo: "warn", txt: "No se pudo guardar. Revisa tu conexión." };
+  }
   renderDetalle();
 }
 
@@ -320,6 +351,7 @@ function renderDetalle() {
   const hist = (c.asistencias || []).slice(-10).reverse();
   const nodo = h("div", {},
     cabecera(detalleEscaneado ? "Cliente escaneado" : "Cliente"),
+    detalleAviso ? h("div", { class: "aviso " + detalleAviso.tipo, role: "status" }, detalleAviso.txt) : false,
     tarjeta(c),
     h("button", { class: "btn lime big", style: "margin-top:12px", disabled: !puede, onclick: () => descontar(id) },
       puede ? "Descontar 1 clase" : e.txt),
@@ -439,7 +471,7 @@ function procesarTexto(texto) {
   try { id = new URL(texto).searchParams.get("c"); } catch {}
   if (!id) { toast("Leí un QR, pero no es de un cliente de MAXEL CLASS."); return false; }
   if (navigator.vibrate) navigator.vibrate(80);
-  if (clientes.has(id)) mostrarDetalle(id, true);
+  if (clientes.has(id)) { detalleAviso = null; mostrarDetalle(id, true); registrarEscaneo(id); }
   else toast("Este QR no corresponde a ninguno de tus clientes.");
   return true;
 }
