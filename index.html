@@ -308,7 +308,7 @@ function abrirHoja(contenido) {
   document.body.append(bg);
 }
 function cerrarHoja() { document.querySelector(".sheet-bg")?.remove(); }
-const cabecera = (t) => h("div", { class: "sheet-head" }, h("h2", {}, t), h("button", { class: "x", "aria-label": "Cerrar", onclick: () => { detalleId = null; detalleAviso = null; cerrarHoja(); } }, "×"));
+const cabecera = (t) => h("div", { class: "sheet-head" }, h("h2", {}, t, h("small", { style: "font-size:.6em;color:var(--muted);font-weight:500;margin-left:8px" }, "v6")), h("button", { class: "x", "aria-label": "Cerrar", onclick: () => { detalleId = null; detalleAviso = null; cerrarHoja(); } }, "×"));
 
 let detalleAviso = null;
 function mostrarDetalle(id, escaneado = false) {
@@ -333,12 +333,17 @@ async function registrarEscaneo(id) {
     detalleAviso = { tipo: "warn", txt: `Ya se registró una clase hace ${Math.max(1, Math.round(min))} min. No se descontó otra.` };
     return renderDetalle();
   }
+  detalleAviso = { tipo: "warn", txt: "Registrando clase…" };
+  renderDetalle();
   try {
-    await updateDoc(doc(db, "clientes", id), { clasesUsadas: increment(1), asistencias: arrayUnion(new Date().toISOString()) });
+    const guardar = updateDoc(doc(db, "clientes", id), { clasesUsadas: increment(1), asistencias: arrayUnion(new Date().toISOString()) });
+    await Promise.race([guardar, new Promise((_, rej) => setTimeout(() => rej(new Error("tiempo")), 8000))]);
     detalleAviso = { tipo: "ok", txt: `✓ Clase registrada. Quedan ${restantes(c) - 1}` };
     if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
-  } catch {
-    detalleAviso = { tipo: "warn", txt: "No se pudo guardar. Revisa tu conexión." };
+  } catch (err) {
+    console.error(err);
+    const sinPermiso = err && (err.code === "permission-denied");
+    detalleAviso = { tipo: "warn", txt: sinPermiso ? "Sin permiso para guardar: revisa las reglas de Firestore y tu correo." : "No se pudo guardar (" + (err && (err.code || err.message) || "error") + "). Revisa tu conexión." };
   }
   renderDetalle();
 }
