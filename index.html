@@ -393,62 +393,82 @@ function formulario(id = null) {
   detalleId = null;
 }
 
-/* --- escáner --- */
+/* --- escáner (v3) --- */
 let stream = null, scanning = false;
+const detectorNativo = ("BarcodeDetector" in window) ? (() => { try { return new BarcodeDetector({ formats: ["qr_code"] }); } catch { return null; } })() : null;
+
+async function decodificar(fuente, w, h2) {
+  // fuente: <video>, <canvas> o <img>
+  if (detectorNativo) {
+    try { const r = await detectorNativo.detect(fuente); if (r.length) return r[0].rawValue; } catch {}
+  }
+  const cv = document.createElement("canvas"), ctx = cv.getContext("2d", { willReadFrequently: true });
+  for (const max of [720, 1280]) {
+    const esc = Math.min(1, max / Math.max(w, h2));
+    cv.width = Math.round(w * esc); cv.height = Math.round(h2 * esc);
+    ctx.drawImage(fuente, 0, 0, cv.width, cv.height);
+    const img = ctx.getImageData(0, 0, cv.width, cv.height);
+    const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
+    if (code) return code.data;
+  }
+  return null;
+}
+
+function procesarTexto(texto) {
+  let id = null;
+  try { id = new URL(texto).searchParams.get("c"); } catch {}
+  if (!id) { toast("Leí un QR, pero no es de un cliente de MAXEL CLASS."); return false; }
+  if (navigator.vibrate) navigator.vibrate(80);
+  if (clientes.has(id)) mostrarDetalle(id, true);
+  else toast("Este QR no corresponde a ninguno de tus clientes.");
+  return true;
+}
+
 async function abrirEscaner() {
   if (!navigator.mediaDevices?.getUserMedia) return toast("Este navegador no permite usar la cámara. Usa HTTPS.");
-  let video, raf;
+  let raf, intentos = 0;
+  const estado = h("small", { style: "display:block;opacity:.8;margin-bottom:10px" }, "Iniciando cámara…");
   const cerrar = () => {
     scanning = false; cancelAnimationFrame(raf);
     stream?.getTracks().forEach(t => t.stop()); stream = null;
     document.querySelector(".scan")?.remove();
   };
-  video = h("video", { playsinline: true, muted: true, autoplay: true });
+  const video = h("video", { playsinline: true, muted: true, autoplay: true });
+  const foto = h("input", { type: "file", accept: "image/*", capture: "environment", style: "display:none", onchange: async e => {
+    const f = e.target.files[0]; if (!f) return;
+    estado.textContent = "Analizando foto…";
+    const url = URL.createObjectURL(f), im = new Image();
+    im.onload = async () => {
+      const t = await decodificar(im, im.naturalWidth, im.naturalHeight);
+      URL.revokeObjectURL(url);
+      if (t) { cerrar(); procesarTexto(t); }
+      else { estado.textContent = "No pude leer el QR en la foto. Acércate más y que salga completo."; }
+    };
+    im.src = url;
+  } });
   const overlay = h("div", { class: "scan" }, video, h("div", { class: "frame" }),
-    h("div", { class: "bar" }, h("p", {}, "Apunta al código QR del cliente"), h("button", { class: "btn big", onclick: cerrar }, "Cancelar")));
+    h("div", { class: "bar" }, h("p", {}, "Apunta al código QR del cliente"), estado,
+      h("div", { class: "actions" },
+        h("button", { class: "btn lime", onclick: () => foto.click() }, "Tomar foto del QR"),
+        h("button", { class: "btn", style: "background:#fff;color:#12201E", onclick: cerrar }, "Cancelar")), foto));
   document.body.append(overlay);
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
   } catch { cerrar(); return toast("Permite el acceso a la cámara para escanear."); }
   video.srcObject = stream;
   await video.play().catch(() => {});
-  const cv = document.createElement("canvas"), ctx = cv.getContext("2d", { willReadFrequently: true });
-  const detector = ("BarcodeDetector" in window) ? new BarcodeDetector({ formats: ["qr_code"] }) : null;
   scanning = true;
   let ultimo = 0;
-  const leer = async () => {
-    if (detector) {
-      try { const r = await detector.detect(video); if (r.length) return r[0].rawValue; } catch {}
-    }
-    const vw = video.videoWidth, vh = video.videoHeight;
-    if (!vw) return null;
-    const esc = Math.min(1, 720 / Math.max(vw, vh));
-    cv.width = Math.round(vw * esc); cv.height = Math.round(vh * esc);
-    ctx.drawImage(video, 0, 0, cv.width, cv.height);
-    const img = ctx.getImageData(0, 0, cv.width, cv.height);
-    const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
-    return code ? code.data : null;
-  };
   const tick = async () => {
     if (!scanning) return;
     const ahora = performance.now();
-    if (video.readyState >= 2 && ahora - ultimo > 120) {
-      ultimo = ahora;
-      const texto = await leer();
+    if (video.readyState >= 2 && video.videoWidth && ahora - ultimo > 150) {
+      ultimo = ahora; intentos++;
+      estado.textContent = `v3 · cámara ${video.videoWidth}x${video.videoHeight} · lector ${detectorNativo ? "nativo" : "alterno"} · intentos ${intentos}`;
+      const texto = await decodificar(video, video.videoWidth, video.videoHeight);
       if (texto && scanning) {
-        let id = null;
-        try { id = new URL(texto).searchParams.get("c"); } catch {}
-        if (id) {
-          cerrar();
-          if (navigator.vibrate) navigator.vibrate(80);
-          if (clientes.has(id)) mostrarDetalle(id, true);
-          else toast("Este QR no corresponde a ninguno de tus clientes.");
-          return;
-        } else if (!window.__avisoQR) {
-          window.__avisoQR = true;
-          toast("Leí un QR, pero no es de un cliente de MAXEL CLASS.");
-          setTimeout(() => { window.__avisoQR = false; }, 3000);
-        }
+        if (procesarTexto(texto)) { cerrar(); return; }
+        await new Promise(r => setTimeout(r, 1500));
       }
     }
     raf = requestAnimationFrame(tick);
